@@ -219,6 +219,9 @@ class MyFrame(wx.Frame):
 						return
 					hardwareRevision = data['hardwareRevision']['value']
 					hardwareRevision = hardwareRevision.split('.')
+					# Fix for hardware versions defined "11.x" in published binaries, change to "11.9"
+					if len(hardwareRevision) > 1 and hardwareRevision[1].lower() == 'x':
+						hardwareRevision[1] = '9'
 					if int(hardwareRevision[0]) < 11:
 						self.ShowStatusBarRED(_('The hardware version of your MAIANA device is too old'))
 						return
