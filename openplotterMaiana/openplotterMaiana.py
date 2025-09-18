@@ -15,11 +15,13 @@
 # You should have received a copy of the GNU General Public License
 # along with Openplotter. If not, see <http://www.gnu.org/licenses/>.
 
-import wx, os, webbrowser, subprocess, time, datetime, ujson, requests, re, sys, socket
+import wx, os, webbrowser, subprocess, time, ujson, requests, re, sys, socket, datetime, ssl
 import wx.richtext as rt
 from openplotterSettings import conf
 from openplotterSettings import language
 from openplotterSettings import platform
+from openplotterSignalkInstaller import connections
+from websocket import create_connection
 from .version import version
 
 class MyFrame(wx.Frame):
@@ -30,11 +32,25 @@ class MyFrame(wx.Frame):
 		self.currentdir = os.path.dirname(os.path.abspath(__file__))
 		self.currentLanguage = self.conf.get('GENERAL', 'lang')
 		self.language = language.Language(self.currentdir,'openplotter-maiana',self.currentLanguage)
+		skConnections = connections.Connections('MAIANA')
+		token = skConnections.token
+		uri = self.platform.ws+'localhost:'+self.platform.skPort+'/signalk/v1/stream?subscribe=none'
+		headers = {'Authorization': 'Bearer '+token}
+		self.ws = create_connection(uri, header=headers, sslopt={"cert_reqs": ssl.CERT_NONE})
 		if self.conf.get('GENERAL', 'debug') == 'yes': self.debug = True
 		else: self.debug = False
-		self.UDP_IP = "localhost"
-		self.UDP_PORT = 40440
-		self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+		try:
+			self.UDP_IP = "localhost"
+			self.UDP_PORT = 40440
+			self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+			self.sock2 = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+			self.server_address = ('localhost', 10110)
+			self.sock2.connect(self.server_address)
+			self.sock2.setblocking(0)
+		except Exception as e:
+			if self.debug: print(str(e))
 
 		wx.Frame.__init__(self, None, title=_('MAIANA AIS transponder')+' '+version, size=(800,444))
 		self.SetFont(wx.Font(10, wx.FONTFAMILY_DEFAULT, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
@@ -85,7 +101,7 @@ class MyFrame(wx.Frame):
 
 		self.Centre()
 
-		self.onRead()
+		self.ShowStatusBarYELLOW(_('Press Resfresh to get data from the MAIANA device'))
 
 	def ShowStatusBar(self, w_msg, colour):
 		self.GetStatusBar().SetForegroundColour(colour)
@@ -120,17 +136,57 @@ class MyFrame(wx.Frame):
 		if self.platform.skPort: 
 			url = self.platform.http+'localhost:'+self.platform.skPort+'/admin/#/serverConfiguration/connections/-'
 			webbrowser.open(url, new=2)
+	
+	def checkResponse(self):
+		response = []
+		try:
+			tick = time.perf_counter()
+			while True:
+				if (time.perf_counter() - tick) > 3: break
+				try: 
+					data = self.sock2.recv(1024)
+					data = data.decode()
+					data = data.splitlines()
+					for data2 in data:
+						if '$PAI' in data2:
+							SKdata = {}
+							data3 = data2.split('*')
+							data3 = data3[0].split(',')
+							#$PAISYS,11.3.0,4.0.0,,STM32L422,1,1*05
+							if data3[0] == '$PAISYS':
+								response.append('$PAISYS')
+								try: SKdata.update({"MAIANA.hardwareRevision":data3[1],"MAIANA.firmwareRevision":data3[2],"MAIANA.serialNumber":data3[3],"MAIANA.MCUtype":data3[4],"MAIANA.breakoutGeneration":data3[5],"MAIANA.bootloader":data3[6]})
+								except: 
+									try: SKdata.update({"MAIANA.hardwareRevision":data3[1],"MAIANA.firmwareRevision":data3[2],"MAIANA.serialNumber":data3[3],"MAIANA.MCUtype":data3[4],"MAIANA.breakoutGeneration":'',"MAIANA.bootloader":''})
+									except: SKdata.update({"MAIANA.hardwareRevision":data3[1],"MAIANA.firmwareRevision":data3[2],"MAIANA.serialNumber":data3[3],"MAIANA.MCUtype":'',"MAIANA.breakoutGeneration":'',"MAIANA.bootloader":''})
+							#$PAISTN,987654321,NAUT,,37,0,0,0,0*2A
+							elif data3[0] == '$PAISTN':
+								response.append('$PAISTN')
+								try:
+									SKdata.update({"MAIANA.station.MMSI":data3[1],"MAIANA.station.vesselName":data3[2],"MAIANA.station.callSign":data3[3],"MAIANA.station.vesselType":int(data3[4]),"MAIANA.station.LOA":int(data3[5]),"MAIANA.station.beam":int(data3[6]),"MAIANA.station.portOffset":int(data3[7]),"MAIANA.station.bowOffset":int(data3[8])})
+								except: pass
+							#$PAITXCFG,1,0,1,1,0*0
+							elif data3[0] == '$PAITXCFG':
+								response.append('$PAITXCFG')
+								try:
+									SKdata.update({"MAIANA.transmission.hardwarePresent":int(data3[1]),"MAIANA.transmission.hardwareSwitch":int(data3[2]),"MAIANA.transmission.softwareSwitch":int(data3[3]),"MAIANA.transmission.stationData":int(data3[4]),"MAIANA.transmission.status":int(data3[5])})
+								except: pass
+							keys = []
+							for i in SKdata:
+								keys.append({"path":i,"value":SKdata[i]})
+							if keys:     
+								SignalK = {"updates":[{"$source":"OpenPlotter.maiana","values":keys}]}
+								SignalK = ujson.dumps(SignalK) 
+								self.ws.send(SignalK+'\r\n')
+				except: pass
+		except Exception as e:
+			if self.debug: print(str(e))
+		return response
 
-	def restartRead(self):
-		subprocess.call([self.platform.admin, 'python3', self.currentdir+'/service.py', 'enable'])
-		time.sleep(1)
-
-	def stopRead(self):
-		subprocess.call([self.platform.admin, 'python3', self.currentdir+'/service.py', 'disable'])
-		time.sleep(1)
-
-	def onRead(self):
-		self.ShowStatusBarYELLOW(_('Reading MAIANA device settings...'))
+	def onclear(self):
+		self.logger.Clear()
+		self.logger2.Clear()
+		self.SKconn.Clear()
 		self.mmsi.SetValue('')
 		self.vesselName.SetValue('')
 		self.callSign.SetValue('')
@@ -139,19 +195,19 @@ class MyFrame(wx.Frame):
 		self.beam.SetValue('')
 		self.portOffset.SetValue('')
 		self.bowOffset.SetValue('')
-		self.logger.Clear()
-		self.logger2.Clear()
-		self.device = self.conf.get('MAIANA', 'device')
+		self.tx = False
 		self.toolbar2.EnableTool(202,False)
 		self.toolbar3.EnableTool(302,False)
 		self.toolbar3.EnableTool(303,False)
 		self.toolbar3.ToggleTool(304,False)
+
+	def onRead(self):
+		self.onclear()
 		if self.conf.get('MAIANA', 'noiseDetect') == '1': self.toolbar3.ToggleTool(304,True)
+		self.device = self.conf.get('MAIANA', 'device')
 		deviceOld = self.device
 		availableIDs = []
 		selected = ''
-		self.tx = False
-
 		try:
 			setting_file = self.platform.skDir+'/settings.json'
 			with open(setting_file) as data_file:
@@ -182,7 +238,6 @@ class MyFrame(wx.Frame):
 					if device == self.device: selected = skID
 			except: pass
 
-		self.SKconn.Clear()
 		self.SKconn.AppendItems(availableIDs)
 		if selected: 
 			self.SKconn.SetValue(selected)
@@ -191,37 +246,42 @@ class MyFrame(wx.Frame):
 			self.conf.set('MAIANA', 'device', self.device)
 			self.SKconn.SetValue(self.connInit)
 			self.ShowStatusBarRED(_('Select the Signal K connection for the MAIANA device'))
-
-		if deviceOld != self.device:
-			if self.device: self.restartRead()
-			else: self.stopRead()
-		else:
-			if self.device: self.restartRead()
-			else: self.stopRead()
+			return
 
 		if self.device:
-			self.sock.sendto(b'sys?\r\n',(self.UDP_IP,self.UDP_PORT))
+			error = []
+			wx.GetApp().Yield()
+			self.ShowStatusBarYELLOW(_('Reading MAIANA station data...'))
+			wx.GetApp().Yield()
 			self.sock.sendto(b'station?\r\n',(self.UDP_IP,self.UDP_PORT))
+			if not '$PAISTN' in self.checkResponse(): error.append(_('station data'))
+			self.ShowStatusBarYELLOW(_('Reading MAIANA transmission data...'))
+			wx.GetApp().Yield()
 			self.sock.sendto(b'tx?\r\n',(self.UDP_IP,self.UDP_PORT))
-			time.sleep(1)
+			if not '$PAITXCFG' in self.checkResponse(): error.append(_('transmission data'))
+			self.ShowStatusBarYELLOW(_('Reading MAIANA system data...'))
+			wx.GetApp().Yield()
+			self.sock.sendto(b'sys?\r\n',(self.UDP_IP,self.UDP_PORT))
+			if not '$PAISYS' in self.checkResponse(): error.append(_('system data'))
+			if error: self.ShowStatusBarRED(_('Errors:')+' '+str(error)+'. '+_('Try again by pressing "Refresh"'))
+			else: self.ShowStatusBarGREEN(_('Done'))
+			wx.GetApp().Yield()
+
 			try:
 				resp = requests.get(self.platform.http+'localhost:'+self.platform.skPort+'/signalk/v1/api/vessels/self/MAIANA/', verify=False)
 				data = ujson.loads(resp.content)
 			except: data = {}
 
+			timestamp = ''
 			if 'hardwareRevision' in data:
 				try:
 					ts = datetime.datetime.utcnow().timestamp()
 					timestamp = data['hardwareRevision']['timestamp']
 					ts2 = time.mktime(datetime.datetime.strptime(timestamp, "%Y-%m-%dT%H:%M:%S.%fZ").timetuple())
-					if ts - ts2 > 5: 
-						self.ShowStatusBarRED(_('Cannot connect with the device, try again by pressing "Refresh"'))
-						return
+					timestampAgo = int(ts - ts2)
 					hardwareRevision = data['hardwareRevision']['value']
 					hardwareRevision = hardwareRevision.split('.')
-					# Fix for hardware versions defined "11.x" in published binaries, change to "11.9"
-					if len(hardwareRevision) > 1 and hardwareRevision[1].lower() == 'x':
-						hardwareRevision[1] = '9'
+					if len(hardwareRevision) > 1 and hardwareRevision[1].lower() == 'x': hardwareRevision[1] = '9'
 					if int(hardwareRevision[0]) < 11:
 						self.ShowStatusBarRED(_('The hardware version of your MAIANA device is too old'))
 						return
@@ -245,117 +305,123 @@ class MyFrame(wx.Frame):
 						self.toolbar2.EnableTool(202,True)
 				except Exception as e:
 					if self.debug: print(str(e))
-					self.ShowStatusBarRED(_('Cannot connect with the device, try again by pressing "Refresh"'))
-					return
-			else: 
-				self.ShowStatusBarRED(_('Cannot connect with the device, try again by pressing "Refresh"'))
-				return
-			self.ShowStatusBarGREEN(_('Done'))
 
+			
 			self.logger.BeginFontSize(10)
-			self.logger.WriteText(_('Hardware revision'))
-			if 'hardwareRevision' in data: 
-				self.logger.WriteText(': '+data['hardwareRevision']['value'])
-				self.hardwareRevision = data['hardwareRevision']['value']
+			self.logger.WriteText(_('Data age')+': ')
+			if timestamp: self.logger.WriteText(str(timestampAgo)+" "+_("seconds"))
 			self.logger.Newline()
-			self.logger.WriteText(_('Firmware revision'))
-			if 'firmwareRevision' in data: 
-				self.logger.WriteText(': '+data['firmwareRevision']['value'])
-			self.logger.Newline()
-			self.logger.WriteText(_('Type of MCU'))
-			if 'MCUtype' in data: 
-				self.logger.WriteText(': '+data['MCUtype']['value'])
-				self.MCUtype = data['MCUtype']['value']
-			self.logger.Newline()
-			self.logger.WriteText(_('Serial number'))
-			if 'serialNumber' in data: self.logger.WriteText(': '+data['serialNumber']['value'])
-			self.logger.Newline()
+
+			if not _('system data') in error:
+				self.logger.WriteText(_('Hardware revision'))
+				if 'hardwareRevision' in data: 
+					self.logger.WriteText(': '+data['hardwareRevision']['value'])
+					self.hardwareRevision = data['hardwareRevision']['value']
+				self.logger.Newline()
+				self.logger.WriteText(_('Firmware revision'))
+				if 'firmwareRevision' in data: 
+					self.logger.WriteText(': '+data['firmwareRevision']['value'])
+				self.logger.Newline()
+				self.logger.WriteText(_('Type of MCU'))
+				if 'MCUtype' in data: 
+					self.logger.WriteText(': '+data['MCUtype']['value'])
+					self.MCUtype = data['MCUtype']['value']
+				self.logger.Newline()
+				self.logger.WriteText(_('Serial number'))
+				if 'serialNumber' in data: self.logger.WriteText(': '+data['serialNumber']['value'])
+				self.logger.Newline()
 			
 			self.logger2.BeginFontSize(10)
-			self.logger2.WriteText(_('Transmitter hardware module'))
-			if 'transmission' in data:
-				if 'hardwarePresent' in data['transmission']:
-					if data['transmission']['hardwarePresent']['value'] == 1: 
-						self.logger2.BeginTextColour((0, 130, 0))
-						self.logger2.WriteText(': '+_('present'))
-					else: 
-						self.logger2.BeginTextColour((130, 0, 0))
-						self.logger2.WriteText(': '+_('not present'))
-			self.logger2.EndTextColour()
+			self.logger2.WriteText(_('Data age')+': ')
+			if timestamp: self.logger2.WriteText(str(timestampAgo)+" "+_("seconds"))
 			self.logger2.Newline()
-			self.logger2.WriteText(_('Hardware TX switch'))
-			if 'transmission' in data:
-				if 'hardwareSwitch' in data['transmission']:
-					if data['transmission']['hardwareSwitch']['value'] == 1: 
-						self.logger2.BeginTextColour((0, 130, 0))
-						self.logger2.WriteText(': '+_('ON'))
-					else: 
-						self.logger2.BeginTextColour((130, 0, 0))
-						self.logger2.WriteText(': '+_('OFF'))
-			self.logger2.EndTextColour()
-			self.logger2.Newline()
-			self.logger2.WriteText(_('Software TX switch'))
-			if 'transmission' in data:
-				if 'softwareSwitch' in data['transmission']:
-					if data['transmission']['softwareSwitch']['value'] == 1: 
-						self.logger2.BeginTextColour((0, 130, 0))
-						self.tx = True
-						self.logger2.WriteText(': '+_('ON'))
-						self.toolbar3.SetToolNormalBitmap(302,wx.Bitmap(self.currentdir+"/data/switch-on.png"))
-					else:
-						self.tx = False
-						self.logger2.BeginTextColour((130, 0, 0))
-						self.logger2.WriteText(': '+_('OFF'))
-						self.toolbar3.SetToolNormalBitmap(302,wx.Bitmap(self.currentdir+"/data/switch-off.png"))
-			self.logger2.EndTextColour()
-			self.logger2.Newline()
-			self.logger2.WriteText(_('Station data'))
-			if 'transmission' in data:
-				if 'stationData' in data['transmission']:
-					if data['transmission']['stationData']['value'] == 1: 
-						self.logger2.BeginTextColour((0, 130, 0))
-						self.logger2.WriteText(': '+_('provided'))
-					else: 
-						self.logger2.BeginTextColour((130, 0, 0))
-						self.logger2.WriteText(': '+_('not provided'))
-			self.logger2.EndTextColour()
-			self.logger2.Newline()
-			self.logger2.WriteText(_('Status'))
-			if 'transmission' in data:
-				if 'status' in data['transmission']:
-					if data['transmission']['status']['value'] == 1:
-						self.logger2.BeginTextColour((0, 130, 0))
-						self.logger2.WriteText(': '+_('transmitting'))
-					else:
-						self.logger2.BeginTextColour((130, 0, 0))
-						self.logger2.WriteText(': '+_('not transmitting'))
-			self.logger2.EndTextColour()
-			self.logger2.Newline()
-			self.logger2.WriteText(_('Channel A latest transmitted message'))
-			self.logger2.WriteText(': ')
-			self.logger2.Newline()
-			if 'channelA' in data:
-				if 'transmittedMessageType' in data['channelA']:
-					if data['channelA']['transmittedMessageType']['value']:
-						self.logger2.WriteText('   '+_('Type'))
-						self.logger2.WriteText(': '+data['channelA']['transmittedMessageType']['value'])
-						self.logger2.Newline()
 
-						self.logger2.WriteText('   '+_('Time'))
-						self.logger2.WriteText(': '+data['channelA']['transmittedMessageType']['timestamp'])
-						self.logger2.Newline()
-			self.logger2.WriteText(_('Channel B latest transmitted message'))
-			self.logger2.WriteText(': ')
-			self.logger2.Newline()
-			if 'channelB' in data:
-				if 'transmittedMessageType' in data['channelB']:
-					if data['channelB']['transmittedMessageType']['value']:
-						self.logger2.WriteText('   '+_('Type'))
-						self.logger2.WriteText(': '+data['channelB']['transmittedMessageType']['value'])
-						self.logger2.Newline()
-						self.logger2.WriteText('   '+_('Time'))
-						self.logger2.WriteText(': '+data['channelB']['transmittedMessageType']['timestamp'])
-						self.logger2.Newline()
+			if not _('transmission data') in error:
+				self.logger2.WriteText(_('Transmitter hardware module'))
+				if 'transmission' in data:
+					if 'hardwarePresent' in data['transmission']:
+						if data['transmission']['hardwarePresent']['value'] == 1: 
+							self.logger2.BeginTextColour((0, 130, 0))
+							self.logger2.WriteText(': '+_('present'))
+						else: 
+							self.logger2.BeginTextColour((130, 0, 0))
+							self.logger2.WriteText(': '+_('not present'))
+				self.logger2.EndTextColour()
+				self.logger2.Newline()
+				self.logger2.WriteText(_('Hardware TX switch'))
+				if 'transmission' in data:
+					if 'hardwareSwitch' in data['transmission']:
+						if data['transmission']['hardwareSwitch']['value'] == 1: 
+							self.logger2.BeginTextColour((0, 130, 0))
+							self.logger2.WriteText(': '+_('ON'))
+						else: 
+							self.logger2.BeginTextColour((130, 0, 0))
+							self.logger2.WriteText(': '+_('OFF'))
+				self.logger2.EndTextColour()
+				self.logger2.Newline()
+				self.logger2.WriteText(_('Software TX switch'))
+				if 'transmission' in data:
+					if 'softwareSwitch' in data['transmission']:
+						if data['transmission']['softwareSwitch']['value'] == 1: 
+							self.logger2.BeginTextColour((0, 130, 0))
+							self.tx = True
+							self.logger2.WriteText(': '+_('ON'))
+							self.toolbar3.SetToolNormalBitmap(302,wx.Bitmap(self.currentdir+"/data/switch-on.png"))
+						else:
+							self.tx = False
+							self.logger2.BeginTextColour((130, 0, 0))
+							self.logger2.WriteText(': '+_('OFF'))
+							self.toolbar3.SetToolNormalBitmap(302,wx.Bitmap(self.currentdir+"/data/switch-off.png"))
+				self.logger2.EndTextColour()
+				self.logger2.Newline()
+				self.logger2.WriteText(_('Station data'))
+				if 'transmission' in data:
+					if 'stationData' in data['transmission']:
+						if data['transmission']['stationData']['value'] == 1: 
+							self.logger2.BeginTextColour((0, 130, 0))
+							self.logger2.WriteText(': '+_('provided'))
+						else: 
+							self.logger2.BeginTextColour((130, 0, 0))
+							self.logger2.WriteText(': '+_('not provided'))
+				self.logger2.EndTextColour()
+				self.logger2.Newline()
+				self.logger2.WriteText(_('Status'))
+				if 'transmission' in data:
+					if 'status' in data['transmission']:
+						if data['transmission']['status']['value'] == 1:
+							self.logger2.BeginTextColour((0, 130, 0))
+							self.logger2.WriteText(': '+_('transmitting'))
+						else:
+							self.logger2.BeginTextColour((130, 0, 0))
+							self.logger2.WriteText(': '+_('not transmitting'))
+				self.logger2.EndTextColour()
+				self.logger2.Newline()
+				self.logger2.WriteText(_('Channel A latest transmitted message'))
+				self.logger2.WriteText(': ')
+				self.logger2.Newline()
+				if 'channelA' in data:
+					if 'transmittedMessageType' in data['channelA']:
+						if data['channelA']['transmittedMessageType']['value']:
+							self.logger2.WriteText('   '+_('Type'))
+							self.logger2.WriteText(': '+data['channelA']['transmittedMessageType']['value'])
+							self.logger2.Newline()
+
+							self.logger2.WriteText('   '+_('Time'))
+							self.logger2.WriteText(': '+data['channelA']['transmittedMessageType']['timestamp'])
+							self.logger2.Newline()
+				self.logger2.WriteText(_('Channel B latest transmitted message'))
+				self.logger2.WriteText(': ')
+				self.logger2.Newline()
+				if 'channelB' in data:
+					if 'transmittedMessageType' in data['channelB']:
+						if data['channelB']['transmittedMessageType']['value']:
+							self.logger2.WriteText('   '+_('Type'))
+							self.logger2.WriteText(': '+data['channelB']['transmittedMessageType']['value'])
+							self.logger2.Newline()
+							self.logger2.WriteText('   '+_('Time'))
+							self.logger2.WriteText(': '+data['channelB']['transmittedMessageType']['timestamp'])
+							self.logger2.Newline()
+
 			self.logger2.WriteText(_('Channel A noise floor'))
 			self.logger2.WriteText(': ')
 			if 'channelA' in data:
@@ -366,20 +432,22 @@ class MyFrame(wx.Frame):
 			if 'channelB' in data:
 				if 'noiseFloor' in data['channelB']: self.logger2.WriteText(str(data['channelB']['noiseFloor']['value']))
 
-			if 'station' in data:
-				if 'MMSI' in data['station']: self.mmsi.SetValue(data['station']['MMSI']['value'])
-				if 'callSign' in data['station']: self.callSign.SetValue(data['station']['callSign']['value'])
-				if 'vesselName' in data['station']: self.vesselName.SetValue(data['station']['vesselName']['value'])
-				if 'vesselType' in data['station']:
-					if data['station']['vesselType']['value'] == 30: self.vesselType.SetSelection(0)
-					elif data['station']['vesselType']['value'] == 34: self.vesselType.SetSelection(1)
-					elif data['station']['vesselType']['value'] == 36: self.vesselType.SetSelection(2)
-					elif data['station']['vesselType']['value'] == 37: self.vesselType.SetSelection(3)
-				if 'LOA' in data['station']: self.LOA.SetValue(str(data['station']['LOA']['value']))
-				if 'beam' in data['station']: self.beam.SetValue(str(data['station']['beam']['value']))
-				if 'bowOffset' in data['station']: self.bowOffset.SetValue(str(data['station']['bowOffset']['value']))
-				if 'portOffset' in data['station']: self.portOffset.SetValue(str(data['station']['portOffset']['value']))
-
+			if not _('station data') in error:
+				if 'station' in data:
+					if 'MMSI' in data['station']: self.mmsi.SetValue(data['station']['MMSI']['value'])
+					if 'callSign' in data['station']: self.callSign.SetValue(data['station']['callSign']['value'])
+					if 'vesselName' in data['station']: self.vesselName.SetValue(data['station']['vesselName']['value'])
+					if 'vesselType' in data['station']:
+						if data['station']['vesselType']['value'] == 30: self.vesselType.SetSelection(0)
+						elif data['station']['vesselType']['value'] == 34: self.vesselType.SetSelection(1)
+						elif data['station']['vesselType']['value'] == 36: self.vesselType.SetSelection(2)
+						elif data['station']['vesselType']['value'] == 37: self.vesselType.SetSelection(3)
+					if 'LOA' in data['station']: self.LOA.SetValue(str(data['station']['LOA']['value']))
+					if 'beam' in data['station']: self.beam.SetValue(str(data['station']['beam']['value']))
+					if 'bowOffset' in data['station']: self.bowOffset.SetValue(str(data['station']['bowOffset']['value']))
+					if 'portOffset' in data['station']: self.portOffset.SetValue(str(data['station']['portOffset']['value']))
+				
+			self.logger2.EndTextColour()
 
 	def onSKconn(self, event):
 		deviceOld = self.conf.get('MAIANA', 'device')
@@ -425,13 +493,6 @@ class MyFrame(wx.Frame):
 					time.sleep(1)
 					wx.GetApp().Yield()
 				self.ShowStatusBarGREEN(_('Signal K server restarted'))
-
-		if deviceOld != self.device:
-			if self.device: self.restartRead()
-			else: self.stopRead()
-		else:
-			if self.device: self.restartRead()
-			else: self.stopRead()
 
 		self.onRead()
 

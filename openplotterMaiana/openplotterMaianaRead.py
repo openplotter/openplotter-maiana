@@ -32,10 +32,9 @@ def main():
 		language.Language(currentdir, package, currentLanguage)
 		skConnections = connections.Connections('MAIANA')
 		token = skConnections.token
-		device = conf2.get('MAIANA', 'device')
 		if conf2.get('GENERAL', 'debug') == 'yes': debug = True
 		else: debug = False
-		if token and device:
+		if token:
 			ws = False
 			sock = False
 			while True:
@@ -59,7 +58,7 @@ def main():
 						if data:
 							tick = time.perf_counter()
 							data = data.decode("utf-8")
-							if '$PA' in data:
+							if '$PAI' in data:
 								data = data.splitlines()
 								for data2 in data:
 									SKdata = {}
@@ -81,22 +80,6 @@ def main():
 									#$PAITX,A,18*1C
 									elif data3[0] == '$PAITX': 
 										SKdata.update({"MAIANA.channel"+data3[1]+".transmittedMessageType":data3[2]})
-									#$PAISYS,11.3.0,4.0.0,,STM32L422,1,1*05
-									elif data3[0] == '$PAISYS':
-										try: SKdata.update({"MAIANA.hardwareRevision":data3[1],"MAIANA.firmwareRevision":data3[2],"MAIANA.serialNumber":data3[3],"MAIANA.MCUtype":data3[4],"MAIANA.breakoutGeneration":data3[5],"MAIANA.bootloader":data3[6]})
-										except: 
-											try: SKdata.update({"MAIANA.hardwareRevision":data3[1],"MAIANA.firmwareRevision":data3[2],"MAIANA.serialNumber":data3[3],"MAIANA.MCUtype":data3[4],"MAIANA.breakoutGeneration":'',"MAIANA.bootloader":''})
-											except: SKdata.update({"MAIANA.hardwareRevision":data3[1],"MAIANA.firmwareRevision":data3[2],"MAIANA.serialNumber":data3[3],"MAIANA.MCUtype":'',"MAIANA.breakoutGeneration":'',"MAIANA.bootloader":''})
-									#$PAISTN,987654321,NAUT,,37,0,0,0,0*2A
-									elif data3[0] == '$PAISTN':
-										try:
-											SKdata.update({"MAIANA.station.MMSI":data3[1],"MAIANA.station.vesselName":data3[2],"MAIANA.station.callSign":data3[3],"MAIANA.station.vesselType":int(data3[4]),"MAIANA.station.LOA":int(data3[5]),"MAIANA.station.beam":int(data3[6]),"MAIANA.station.portOffset":int(data3[7]),"MAIANA.station.bowOffset":int(data3[8])})
-										except: pass
-									#$PAITXCFG,1,0,1,1,0*0
-									elif data3[0] == '$PAITXCFG':
-										try:
-											SKdata.update({"MAIANA.transmission.hardwarePresent":int(data3[1]),"MAIANA.transmission.hardwareSwitch":int(data3[2]),"MAIANA.transmission.softwareSwitch":int(data3[3]),"MAIANA.transmission.stationData":int(data3[4]),"MAIANA.transmission.status":int(data3[5])})
-										except: pass
 									keys = []
 									for i in SKdata:
 										keys.append({"path":i,"value":SKdata[i]})
@@ -105,7 +88,9 @@ def main():
 										SignalK = json.dumps(SignalK) 
 										ws.send(SignalK+'\r\n')
 				except Exception as e: 
-					if debug: print(str(e))
+					if debug: 
+						print(str(e))
+						sys.stdout.flush()
 					if ws: ws.close()
 					if sock: sock.close()
 					time.sleep(5)

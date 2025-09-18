@@ -23,10 +23,3 @@ if sys.argv[1]=='sk':
 		subprocess.call(['systemctl', 'stop', 'signalk.socket'])
 		subprocess.call(['systemctl', 'start', 'signalk.socket'])
 		subprocess.call(['systemctl', 'start', 'signalk.service'])
-
-if sys.argv[1]=='enable':
-	subprocess.call(['systemctl', 'restart', 'openplotter-maiana-read.service'])
-	subprocess.call(['systemctl', 'enable', 'openplotter-maiana-read.service'])
-elif sys.argv[1]=='disable':
-	subprocess.call(['systemctl', 'stop', 'openplotter-maiana-read.service'])
-	subprocess.call(['systemctl', 'disable', 'openplotter-maiana-read.service'])

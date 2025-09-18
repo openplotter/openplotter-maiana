@@ -62,6 +62,8 @@ def main():
 		fo.write( '[Service]\nEnvironment=OPrescue=0\nEnvironmentFile=-/boot/firmware/config.txt\nExecStart=openplotter-maiana-read $OPrescue\nUser='+conf2.user+'\nRestart=always\nRestartSec=3\n\n[Install]\nWantedBy=local-fs.target')
 		fo.close()
 		subprocess.call(['systemctl', 'daemon-reload'])
+		subprocess.call(['systemctl', 'enable', 'openplotter-maiana-read.service'])
+		subprocess.call(['systemctl', 'restart', 'openplotter-maiana-read.service'])
 		print(_('DONE'))
 	except Exception as e: print(_('FAILED: ')+str(e))
 	
