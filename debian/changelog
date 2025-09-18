@@ -1,3 +1,11 @@
+openplotter-maiana (4.2.0-stable) bookworm; urgency=medium
+
+  * Update translations
+  * fix actions
+  * improve device data management
+
+ -- Sailoog <info@sailoog.com>  Thu, 12 Jun 2025 19:01:22 +0200
+
 openplotter-maiana (4.1.0-stable) bookworm; urgency=medium
 
   * stable
