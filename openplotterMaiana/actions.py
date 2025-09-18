@@ -15,7 +15,7 @@
 # You should have received a copy of the GNU General Public License
 # along with Openplotter. If not, see <http://www.gnu.org/licenses/>.
 
-import os, subprocess, serial
+import os, subprocess, socket
 from openplotterSettings import language
 
 class Actions:
@@ -31,9 +31,12 @@ class Actions:
 
 	def run(self,action,data):
 		try:
-			device = self.conf.get('MAIANA', 'device')
-			ser = serial.Serial(device, 38400)
-			if action == 'txOn': ser.write('tx on\r\n'.encode("utf-8"))
-			elif action == 'txOff': ser.write('tx off\r\n'.encode("utf-8"))
+			UDP_IP = "localhost"
+			UDP_PORT = 40440
+			sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+			if action == 'txOn': 
+				sock.sendto(b'tx on\r\n',(UDP_IP,UDP_PORT))
+			elif action == 'txOff': 
+				sock.sendto(b'tx off\r\n',(UDP_IP,UDP_PORT))
 		except Exception as e: 
 			if self.debug: print('Error processing openplotter-maiana actions: '+str(e))
